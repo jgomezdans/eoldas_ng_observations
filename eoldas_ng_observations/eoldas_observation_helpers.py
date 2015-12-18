@@ -12,9 +12,7 @@ import numpy as np
 
 import gp_emulator
 
-FIXED = 1
-CONSTANT = 2
-VARIABLE = 3
+from eoldas_ng import FIXED, CONSTANT, VARIABLE
 
 
 def get_vaa ( lrx, lry, ulx, uly ):

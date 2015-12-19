@@ -1,3 +1,4 @@
+import cPickle
 import netCDF4 
 import numpy as np
 
@@ -7,7 +8,7 @@ import os
 import gdal
 import netCDF4
 
-from best_chunk import chunk_shape_3D
+#from best_chunk import chunk_shape_3D
 
 class OutputFile ( object ):
     def __init__ ( self, fname, times=None, input_file=None ):
@@ -34,6 +35,7 @@ class OutputFile ( object ):
         
         self.nc = netCDF4.Dataset( self.fname, 'w', clobber=True )
 
+        self.nc.createDimension ( 'scalar', None )
 
         # create dimensions, variables and attributes:
         if times is None:
@@ -47,7 +49,7 @@ class OutputFile ( object ):
         if times is not None:
             timeo[:] = netCDF4.date2num ( times, units=timeo.units, 
                                          calendar=timeo.calendar )
-
+        
     def create_spatial_domain ( self ):
         self.nc.createDimension( 'x', self.nx )
         self.nc.createDimension( 'y', self.ny )
@@ -72,67 +74,57 @@ class OutputFile ( object ):
 
     def create_variable ( self, group, varname, vardata,
             units, long_name, std_name, vartype='f4' ):
-        varo = self.nc.group.createVariable(varname, vartype,  ('time', 'y', 'x'), 
-            zlib=True,chunksizes=[16, 12, 12],fill_value=-9999)
+        if vardata.ndim == 1:
+            varo = self.nc.groups[group].createVariable(varname, vartype,  ('time'), 
+                zlib=True,chunksizes=[16],fill_value=-9999)
+            varo[:] = vardata
+        elif vardata.ndim == 2:
+            varo = self.nc.groups[group].createVariable(varname, vartype,  ('y', 'x'), 
+                zlib=True,chunksizes=[12, 12],fill_value=-9999)
+            varo.grid_mapping = 'crs'
+        
+            varo[:,:] = vardata
+
+        elif vardata.ndim == 3:
+            varo = self.nc.groups[group].createVariable(varname, vartype,  ( 't','y', 'x'), 
+                zlib=True,chunksizes=[16, 12, 12],fill_value=-9999)
+            varo.grid_mapping = 'crs'
+            varo[:,:, :] = vardata
+        else:
+            varo = self.nc.groups[group].createVariable(varname, vartype,  'scalar')
+            varo[:] = vardata
+            
+
         varo.units = units
         varo.scale_factor = 1.00
         varo.add_offset = 0.00
         varo.long_name = long_name
         varo.standard_name = std_name
-        varo.grid_mapping = 'crs'
+        # varo.grid_mapping = 'crs'
         varo.set_auto_maskandscale(False)
-        varo[:,...] = vardata
+        #varo[:,...] = vardata
     
     def set_variable ( self, varname, var ):
         self.nc[varname][:,...] = var 
 
-    def __del__ ( self )
+    def __del__ ( self ):
         self.nc.close()
 
-def pkl_to_nc4 ( pk_file, nc_output, the_state ):
+
+def pkl_to_nc4 ( pk_file, nc_output ):
 
         with open ( pk_file, 'r' ) as fp:
             f = cPickle.load ( fp )
-
-
-            nc = netCDF4.Dataset(nc_output,'w',format='NETCDF4')
-            print nc.file_format
-
-            lat = nc.createDimension('lat', 1)
-            lon = nc.createDimension('lon', 1)
-            time = nc.createDimension('time', 365)
-            n_lat = len ( lat )
-            n_lon = len ( lon )
-            n_time = len ( time )
-
-
-            times = nc.createVariable('time', np.float64, ('time',))
-            latitudes = nc.createVariable('latitude', np.float32,
-            ('lat',))
-            longitudes = nc.createVariable('longitude', np.float32,
-            ('lon',))
-            # Create the actual variables from the pkl file...
-
-            groups=[]
-            variables=[]
+            nt=len(f['real_map']['lai'] )
+            times = [dt.datetime ( 2001, 1, 1) + i*dt.timedelta(days=1) \
+                        for i in xrange(nt) ]
+            nc = OutputFile ( nc_output, times=times)
             for group in f.iterkeys():
-                if group == "post_sigma":
+                if group == "post_sigma" or group == "post_cov":
                     continue
-                elif group == "post_cov":
-                    continue
-                else:
-                    this_group = nc.createGroup ( group )
-                    for variable in f[group].iterkeys():
-                        this_var = this_group.createVariable ( variable, np.float32,
-                                ('time', 'lat','lon'))
-                        output = np.ones (( n_time, n_lat, n_lon ))
-                        try:
-                            output[:,:,:] = f[group][variable][:, None, None]
-                        except: 
-                            output[:,:,:] = f[group][variable]
+                nc.create_group ( group )
+                for field in f[group].iterkeys():
+                    nc.create_variable ( group, field, f[group][field], "N/A", "",field )
 
-                        this_var[:, :, :] = output
-
-
-                    
-        nc.close() 
+if __name__ == "__main__":
+    pkl_to_nc4 ( "/home/ucfajlg/python/da_esa_wkshp/eoldas_retval_20150905_194312_cubil.pkl", "/tmp/testme.nc" )

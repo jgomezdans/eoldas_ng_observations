@@ -10,15 +10,45 @@ import netCDF4
 
 #from best_chunk import chunk_shape_3D
 
+
+def store_sparse_mat(m, name, store='store.h5'):
+    msg = "This code only works for csr matrices"
+    assert(m.__class__ == sparse.csr.csr_matrix), msg
+    with tb.openFile(store,'a') as f:
+        for par in ('data', 'indices', 'indptr', 'shape'):
+            full_name = '%s_%s' % (name, par)
+            try:
+                n = getattr(f.root, full_name)
+                n._f_remove()
+            except AttributeError:
+                pass
+
+            arr = array(getattr(m, par))
+            atom = tb.Atom.from_dtype(arr.dtype)
+            ds = f.createCArray(f.root, full_name, atom, arr.shape)
+            ds[:] = arr
+
+def load_sparse_mat(name, store='store.h5'):
+    with tb.openFile(store) as f:
+        pars = []
+        for par in ('data', 'indices', 'indptr', 'shape'):
+            pars.append(getattr(f.root, '%s_%s' % (name, par)).read())
+    m = sparse.csr_matrix(tuple(pars[:3]), shape=pars[3])
+    return m
+
 class OutputFile ( object ):
-    def __init__ ( self, fname, times=None, input_file=None ):
+    
+    def __init__ ( self, fname, times=None, input_file=None,            
+                        basedate=dt.datetime(1970,1,1,0,0,0)  ):
         self.fname = fname
+        self.basedate = basedate
+
         self.create_netcdf ( times )
         if input_file is not None:
             self._get_spatial_metadata ( input_file )
             self.create_spatial_domain( )
         
-    def _get_spatial_metadata ( self, geofile, basedate=dt.datetime(1858,11,17,0,0,0) ):
+    def _get_spatial_metadata ( self, geofile ):
         g = gdal.Open ( geofile )
         if g is None:
             raise IOError ("File %s not readable by GDAL" % geofile )
@@ -28,7 +58,6 @@ class OutputFile ( object ):
         self.y = np.arange ( ny )*geo_transform[5] + geo_transform[3]
         self.nx = nx
         self.ny = ny
-        self.basedate = basedate
         self.wkt = g.GetProjectionRef()
 
     def create_netcdf ( self, times=None ):
@@ -104,9 +133,6 @@ class OutputFile ( object ):
         varo.set_auto_maskandscale(False)
         #varo[:,...] = vardata
     
-    def set_variable ( self, varname, var ):
-        self.nc[varname][:,...] = var 
-
     def __del__ ( self ):
         self.nc.close()
 
@@ -125,6 +151,7 @@ def pkl_to_nc4 ( pk_file, nc_output ):
                 nc.create_group ( group )
                 for field in f[group].iterkeys():
                     nc.create_variable ( group, field, f[group][field], "N/A", "",field )
-
+        return nc
 if __name__ == "__main__":
-    pkl_to_nc4 ( "/home/ucfajlg/python/da_esa_wkshp/eoldas_retval_20150905_194312_cubil.pkl", "/tmp/testme.nc" )
+    nc =pkl_to_nc4 ( "/home/ucfajlg/python/da_esa_wkshp/eoldas_retval_20150905_194312_cubil.pkl", "/tmp/testme.nc" )
+    print nc

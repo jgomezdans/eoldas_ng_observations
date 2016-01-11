@@ -39,11 +39,23 @@ def load_sparse_mat(name, store='store.h5'):
 class OutputFile ( object ):
     
     def __init__ ( self, fname, times=None, input_file=None,            
-                        basedate=dt.datetime(1970,1,1,0,0,0)  ):
+                        basedate=dt.datetime(1970,1,1,0,0,0),
+                        x=None, y=None):
         self.fname = fname
         self.basedate = basedate
 
         self.create_netcdf ( times )
+        if x is not None and y is not None:
+            self.nc.createDimension( 'x', x )
+            self.nc.createDimension( 'y', y )
+
+            xo = self.nc.createVariable('x','f4',('x'))
+            xo.units = 'm'
+            xo.standard_name = 'projection_x_coordinate'
+
+            yo = self.nc.createVariable('y','f4',('y'))
+            yo.units = 'm'            
+            
         if input_file is not None:
             self._get_spatial_metadata ( input_file )
             self.create_spatial_domain( )

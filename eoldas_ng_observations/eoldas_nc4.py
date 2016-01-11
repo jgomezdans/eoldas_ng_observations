@@ -46,8 +46,8 @@ class OutputFile ( object ):
 
         self.create_netcdf ( times )
         if x is not None and y is not None:
-            self.nc.createDimension( 'x', x )
-            self.nc.createDimension( 'y', y )
+            self.nc.createDimension( 'x', len(x) )
+            self.nc.createDimension( 'y', len(y) )
 
             xo = self.nc.createVariable('x','f4',('x'))
             xo.units = 'm'
@@ -55,6 +55,8 @@ class OutputFile ( object ):
 
             yo = self.nc.createVariable('y','f4',('y'))
             yo.units = 'm'            
+            xo[:] = x
+            yo[:] = y
             
         if input_file is not None:
             self._get_spatial_metadata ( input_file )

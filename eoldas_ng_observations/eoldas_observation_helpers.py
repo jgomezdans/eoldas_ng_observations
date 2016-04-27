@@ -142,8 +142,9 @@ def reproject_cut ( slave, box=None, t_srs=None, s_srs=None, res=None ):
 
     master_geotrans = [ ulx, res, slave_geotrans[2],
                         uly, slave_geotrans[4], -res ]
-    w = int((lrx - ulx) / res)
-    h = int((uly - lry) / res)
+
+    w = int(np.round((lrx - ulx) / res))
+    h = int(np.round((uly - lry) / res))
 
     dst_filename = slave.replace( ".TIF", "_crop.tif" )
     if dst_filename == slave:
@@ -268,20 +269,21 @@ class ObservationStorage ( object ):
             
             
             
-    def loop_observations ( self, start_date, end_date, step=1, fmt="%Y-%m-%d" ):
+    def loop_observations ( self, start_date, end_date, 
+                           step=1, fmt="%Y-%m-%d" ):
         """This is a generator method that loops over the available 
         observations between a start and an end point with a given
         temporal resolution (in days)"""
 
         start_date = datetime.datetime.strptime( start_date, fmt )
         end_date = datetime.datetime.strptime( end_date, fmt )
-        if start_date < self.date[0]:
-            print "No observations until %s, starting from there" % self.date[0]
-            start_date = self.date[0]
+        if start_date < min( self.date ):
+            start_date = min( self.date )
+            print "No observations until %s, starting from there" % start_date
 
-        if end_date > self.date[-1]:
-            print "No observations after %s, stopping there" % self.date[-1]
-            end_date = self.date[-1]
+        if end_date > max( self.date ):
+            end_date = max ( self.date )
+            print "No observations after %s, stopping there" % end_date
 
         delta = datetime.timedelta ( days=step )
         this_date = start_date.date()
@@ -296,11 +298,18 @@ class ObservationStorage ( object ):
                     the_mask = map ( *self.masks[iloc] )
                 except:
                     the_mask = self.get_mask ( iloc )
-                the_emulator = self.emulator[ iloc ]
+                # Need to have a better way to fish the emulator
+                # out. Probably divide by "5" or somesuch
+                
                 the_sza = self.sza[ iloc ]
                 the_saa = self.saa[ iloc ]
                 the_vza = self.vza[ iloc ]
                 the_vaa = self.vaa[ iloc ]
+                try:
+                    the_emulator = self.emulator[iloc]
+                except KeyError:
+                    the_key = self.emu_keys[iloc]
+                    the_emulator = self.emulator[the_key]
                 the_fname = self._data_pntr[iloc].GetDescription()
                 try:
                     the_sensor = self.sensor[iloc]
@@ -335,7 +344,7 @@ class ObservationStorage ( object ):
 class ETMObservations ( ObservationStorage ):
 
     """A class to locate and process ETM+ observations fro disk."""
-    def __init__ ( self, datadir, emulator_home, resample_opts=None ):
+    def __init__ ( self, datadir, emulator_home=None, resample_opts=None ):
         """The class takes the directory where the files sit. We expect to
         find an XML file with the metadata.
         """
@@ -356,7 +365,8 @@ class ETMObservations ( ObservationStorage ):
 
         self._setup_sensor()
         self._parse_metadata ()
-        self._get_emulators ( emulator_home )
+        if emulator_home is not None:
+            self._get_emulators ( emulator_home )
         self._sort_data ( resample_opts )
 
     def _setup_sensor ( self ):
@@ -520,7 +530,7 @@ class SPOTObservations ( ObservationStorage ):
     Landsat or Sentinel2 data.
     """
 
-    def __init__ ( self, datadir, emulator_home, resample_opts=None,  ):
+    def __init__ ( self, datadir, emulator_home=None, resample_opts=None,  ):
         """The class takes the directory where the files sit. We expect to
         find an XML file with the metadata.
         """
@@ -533,8 +543,12 @@ class SPOTObservations ( ObservationStorage ):
         self.metadata = []
         for root, dirnames, filenames in os.walk( datadir ):
             for filename in fnmatch.filter(filenames, '*.xml'):
-                self.metadata.append(os.path.join(root, filename))
-
+                
+	        if filename.find ( ".aux.xml" ) < 0:
+                    # Not all xml files are metadata files. The aux.xml are
+                    # used by GDAL etc for stuff...
+                    self.metadata.append(os.path.join(root, filename))
+        
         self.datadir = datadir
        
         if len ( self.metadata ) < 0:
@@ -542,7 +556,8 @@ class SPOTObservations ( ObservationStorage ):
 
         self._setup_sensor()
         self._parse_metadata ()
-        self._get_emulators ( emulator_home )
+        if emulator_home is not None:
+            self._get_emulators ( emulator_home )
         self._sort_data ( resample_opts )
 
     def _setup_sensor ( self ):
@@ -567,10 +582,12 @@ class SPOTObservations ( ObservationStorage ):
             dirname = os.path.dirname ( md_file )
             try:
                 self.date.append(
-                    datetime.datetime.strptime(tree[0][1].text, "%Y-%m-%d %H:%M:%S") )
+                    datetime.datetime.strptime(tree[0][1].text, 
+                                               "%Y-%m-%d %H:%M:%S") )
             except:
                 self.date.append(
-                    datetime.datetime.strptime(tree[0][1].text, "%Y-%m-%d %H:%M:%S.%f") )
+                    datetime.datetime.strptime(tree[0][1].text, 
+                                               "%Y-%m-%d %H:%M:%S.%f") )
             self.atcorr_refl.append(
                 os.path.join ( dirname, tree[1][2].text ) )
             self.saa.append( float ( tree[4][10][0].text ) )
@@ -635,35 +652,81 @@ class SPOTObservations ( ObservationStorage ):
         m2 = np.logical_not ( np.bitwise_and ( nua, 1 ).astype ( np.bool ) )
         return m1 * m2 * m3
 
-    def _get_emulators ( self, emulator_home, model="prosail"):
+    def _get_emulators ( self, emulator_home, verbose=True ):
         """Based on the geometry, get the emulators. What could be simpler?"""
+        
+            
+        n_geom = len( self.vza )
+        # Locate all available emulators...
         files = glob.glob("%s*.npz" % emulator_home)
         emulator_search_dict = {}
         for f in files:
-            emulator_search_dict[ float(f.split("/")[-1].split("_")[0]),
-                                  float(f.split("/")[-1].split("_")[1]),
-                                  float(f.split("/")[-1].split("_")[2]),
-                                  float(f.split("/")[-1].split("_")[3])] = f
+            
+            fs = f.replace(".npz", "")
+            try:
+                emulator_search_dict[ float(fs.split("/")[-1].split("_")[1]), \
+                                        float(fs.split("/")[-1].split("_")[2]),
+                                        float(fs.split("/")[-1].split("_")[3])] = f
+            except:
+                pass
+        
         # So we have a dictionary inddexed by SZA, VZA and RAA and mapping to a filename
-        # Remove some weirdos...
-
+        raa = np.array(self.vaa) - np.array(self.saa)
         emu_keys = np.array( emulator_search_dict.keys() )
-        self.emulator = []
-        for i in xrange (len ( self.metadata ) ):
-            e_sza = emu_keys[
-                np.argmin (np.abs( emu_keys[:, 0] - self.sza[i] )), 0]
-            e_vza = emu_keys[
-                np.argmin (np.abs( emu_keys[:, 2] - self.vza[i] )), 2]
-            e_saa = emu_keys[
-                np.argmin (np.abs( emu_keys[:, 2] - self.saa[i] )), 1]
-            e_vaa = emu_keys[
-                np.argmin (np.abs( emu_keys[:, 3] - self.vaa[i] )), 3]
-            print self.sza[i], e_sza, self.vza[i], e_vza, self.vaa[i], e_vaa, self.saa[i], e_saa
-            the_emulator = "%.1f_%.1f_%.1f_%.1f_%s.npz" % (
-                e_sza, e_saa, e_vza, e_vaa, model )
-            print "Using emulator %s" % os.path.join ( emulator_home, the_emulator )
-            self.emulator.append ( gp_emulator.MultivariateEmulator
-                                   ( dump=os.path.join ( emulator_home, the_emulator ) ) )
+        # Calculate the distance per dimension
+        emu_locs1 = np.array([(emu_keys[:,0]- self.sza[i])**2 for i in xrange(n_geom)])
+        emu_locs2 = np.array([(emu_keys[:,1]- self.vza[i])**2 for i in xrange(n_geom)])
+        emu_locs3 = np.array([(emu_keys[:,2]- raa[i])**2 for i in xrange(n_geom)])
+        # The selected angles are given by the least distance
+        sel_emus1 = emu_locs1.argmin(axis=1)
+        sel_emus2 = emu_locs2.argmin(axis=1)
+        sel_emus3 = emu_locs3.argmin(axis=1)
+        # Stores the closest set of angles
+        all_angles = np.c_[emu_keys[sel_emus1,0], emu_keys[sel_emus2,1], 
+                        emu_keys[sel_emus3,2] ]
+        # We now go and select individual emulators. Since several observations might share
+        # the same emulator, we only load the emulator up once
+        emulators = {}
+        self.emu_keys = []
+        for i in xrange(n_geom):
+            the_key = tuple ( all_angles[i,:].astype (np.int) )
+            self.emu_keys.append ( the_key )
+            if not emulators.has_key ( the_key ):
+                if verbose:
+                    print "Reading (%d,%d,%d) from %s" % ( the_key[0], the_key[1],
+                                            the_key[2], emulator_search_dict[the_key] )
+                emulators [the_key] = gp_emulator.MultivariateEmulator ( 
+                        dump=emulator_search_dict[the_key])
+            
+        self.emulator = emulators
+
+        #####files = glob.glob("%s*.npz" % emulator_home)
+        #####emulator_search_dict = {}
+        #####for f in files:
+            #####emulator_search_dict[ float(f.split("/")[-1].split("_")[0]),
+                                  #####float(f.split("/")[-1].split("_")[1]),
+                                  #####float(f.split("/")[-1].split("_")[2]),
+                                  #####float(f.split("/")[-1].split("_")[3])] = f
+        ###### So we have a dictionary inddexed by SZA, VZA and RAA and mapping to a filename
+        ###### Remove some weirdos...
+
+        #####emu_keys = np.array( emulator_search_dict.keys() )
+        #####self.emulator = []
+        #####for i in xrange (len ( self.metadata ) ):
+            #####e_sza = emu_keys[
+                #####np.argmin (np.abs( emu_keys[:, 0] - self.sza[i] )), 0]
+            #####e_vza = emu_keys[
+                #####np.argmin (np.abs( emu_keys[:, 2] - self.vza[i] )), 2]
+            #####e_saa = emu_keys[
+                #####np.argmin (np.abs( emu_keys[:, 2] - self.saa[i] )), 1]
+            #####e_vaa = emu_keys[
+                #####np.argmin (np.abs( emu_keys[:, 3] - self.vaa[i] )), 3]
+            #####print self.sza[i], e_sza, self.vza[i], e_vza, self.vaa[i], e_vaa, self.saa[i], e_saa
+            #####the_emulator = "%.1f_%.1f_%.1f_%.1f_%s.npz" % (
+                #####e_sza, e_saa, e_vza, e_vaa, model )
+            #####print "Using emulator %s" % os.path.join ( emulator_home, the_emulator )
+            #####self.emulator.append ( gp_emulator.MultivariateEmulator
+                                   #####( dump=os.path.join ( emulator_home, the_emulator ) ) )
 
 if __name__ == "__main__":
     resample_opts = {'box': [546334.113775153,  6274489.49408634,  \
